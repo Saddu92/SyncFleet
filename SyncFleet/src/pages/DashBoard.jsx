@@ -26,11 +26,13 @@ const Dashboard = () => {
 
     fetchRooms();
   }, []);
-
-  const handleJoinRoom = code => {
-  setActiveRoom(code);
-  navigate(`/room/${code}/map`);
+    
+  const handleJoinRoom = async (roomCode) => {
+  setActiveRoom(roomCode);
+  navigate(`/room/${roomCode}/map`);
 };
+
+  
 
   return (
     <div className="flex flex-col min-h-screen bg-gradient-to-br from-white via-gray-100 to-gray-200">

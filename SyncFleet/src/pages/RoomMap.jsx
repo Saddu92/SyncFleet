@@ -7,7 +7,14 @@ import React, {
 } from "react";
 import { useParams } from "react-router-dom";
 import { getSocket, disconnectSocket } from "../utils/socket.js";
-import { MapContainer, TileLayer, Marker, Popup, useMap, Circle } from "react-leaflet";
+import {
+  MapContainer,
+  TileLayer,
+  Marker,
+  Popup,
+  useMap,
+  Circle,
+} from "react-leaflet";
 import L from "leaflet";
 import haversine from "haversine-distance";
 import { IoMdSend } from "react-icons/io";
@@ -16,6 +23,12 @@ import { FiUsers, FiMessageSquare } from "react-icons/fi";
 import "leaflet-polylinedecorator";
 import useSound from "use-sound";
 import notificationSound from "../assets/notification.mp3";
+import RoutePath from "./RoutePath.jsx";
+import axios from "axios";
+import HazardLayer from "./HazardLayer.jsx";
+
+import { GEOCODE, ROOM_BY_CODE } from "@/utils/constant.js";
+import API from "@/utils/axios.js";
 
 const STATIONARY_LIMIT = 5 * 60 * 1000; // 5 minutes
 const MOVEMENT_THRESHOLD = 5; // meters
@@ -27,13 +40,20 @@ const DEVIATION_THRESHOLD = 150; // meters
 const SOS_DURATION = 30000; // 30 seconds
 
 const COLORS = [
-  "#3b82f6", "#ef4444", "#10b981", "#f59e0b",
-  "#8b5cf6", "#ec4899", "#14b8a6", "#f97316",
+  "#3b82f6",
+  "#ef4444",
+  "#10b981",
+  "#f59e0b",
+  "#8b5cf6",
+  "#ec4899",
+  "#14b8a6",
+  "#f97316",
 ];
 
 // Fix Leaflet default icon path
 L.Icon.Default.mergeOptions({
-  iconRetinaUrl: "https://unpkg.com/leaflet@1.9.3/dist/images/marker-icon-2x.png",
+  iconRetinaUrl:
+    "https://unpkg.com/leaflet@1.9.3/dist/images/marker-icon-2x.png",
   iconUrl: "https://unpkg.com/leaflet@1.9.3/dist/images/marker-icon.png",
   shadowUrl: "https://unpkg.com/leaflet@1.9.3/dist/images/marker-shadow.png",
 });
@@ -164,7 +184,17 @@ class ErrorBoundary extends React.Component {
   }
 }
 
-const RoomMap = () => {
+export async function apiCallToGetRoom(roomCode) {
+  try {
+    const res = await API.get(ROOM_BY_CODE(roomCode)); // GET instead of POST
+    return res.data;
+  } catch (err) {
+    console.error("Error fetching room:", err);
+    throw err;
+  }
+}
+
+const RoomMap = ({ room }) => {
   const { code: roomCode } = useParams();
   const socket = getSocket();
   const [playAlertSound] = useSound(notificationSound, { interrupt: true });
@@ -191,8 +221,13 @@ const RoomMap = () => {
   const [userTrails, setUserTrails] = useState({});
   const [trailDuration, setTrailDuration] = useState(DEFAULT_TRAIL_DURATION);
   const [geofence, setGeofence] = useState({
-    center: null, radius: 300
+    center: null,
+    radius: 300,
   });
+  const [currentRoom, setCurrentRoom] = useState(null);
+  const [sourceCoords, setSourceCoords] = useState(null);
+  const [destinationCoords, setDestinationCoords] = useState(null);
+  const [hazards, setHazards] = useState([]);
 
   // Refs
   const mapRef = useRef();
@@ -209,6 +244,78 @@ const RoomMap = () => {
     () => trailDuration * 60 * 1000,
     [trailDuration]
   );
+
+  // For Polyline
+  const ORS_API_KEY = import.meta.env.VITE_API_KEY; // Ensure your API key in env
+
+  // ... imports unchanged
+
+  // ... keep the rest of the file unchanged
+
+  async function geocodeLocation(location) {
+    try {
+      let res;
+
+      if (typeof location === "string" || location?.displayName) {
+        // Forward geocode: place name -> coords
+        const address =
+          typeof location === "string" ? location : location.displayName;
+        // Send a flat 'text' param
+        res = await API.get(GEOCODE, { params: { text: address } });
+      } else if (location?.lat && location?.lng) {
+        // Reverse geocode: coords -> place name
+        // Send flat 'lat' and 'lon' params
+        res = await API.get(GEOCODE, {
+          params: { lat: location.lat, lon: location.lng },
+        });
+      } else {
+        console.warn("⚠️ geocodeLocation called with invalid input:", location);
+        return null;
+      }
+
+      // Backend returns a single object with lat/lng for both forward and reverse
+      if (res.data?.lat != null && res.data?.lng != null) {
+        return { lat: parseFloat(res.data.lat), lng: parseFloat(res.data.lng) };
+      }
+
+      // Fallback if backend is ever changed to return an array like Nominatim search
+      if (
+        Array.isArray(res.data) &&
+        res.data?.lat != null &&
+        res.data?.lon != null
+      ) {
+        return { lat: parseFloat(res.data.lat), lng: parseFloat(res.data.lon) };
+      }
+
+      console.warn("No coordinates found for:", location, res.data);
+      return null;
+    } catch (error) {
+      console.error("❌ Geocode error", error?.response?.data || error.message);
+      return null;
+    }
+  }
+
+  useEffect(() => {
+    async function fetchRoom() {
+      // Replace with your actual API call to get room info by roomId or code
+      const roomData = await apiCallToGetRoom(roomCode);
+      setCurrentRoom(roomData);
+
+      if (roomData?.source && roomData?.destination) {
+        const sCoords = await geocodeLocation(roomData.source);
+        const dCoords = await geocodeLocation(roomData.destination);
+        setSourceCoords(sCoords);
+        setDestinationCoords(dCoords);
+      }
+    }
+    fetchRoom();
+  }, [roomCode]);
+
+  // --- Move this useEffect here with other hooks ---
+  useEffect(() => {
+    setSourceCoords(currentRoom?.source || null);
+    setDestinationCoords(currentRoom?.destination || null);
+  }, [currentRoom]);
 
   // Toast helper
   const showToast = useCallback((message, type = "info") => {
@@ -302,7 +409,10 @@ const RoomMap = () => {
   const emitLocationUpdate = useCallback(
     (coords) => {
       if (!user?.id || !user?.name || !socket.connected) {
-        showToast("Cannot send location - disconnected from server or missing user info", "danger");
+        showToast(
+          "Cannot send location - disconnected from server or missing user info",
+          "danger"
+        );
         return;
       }
       socket.emit(
@@ -369,10 +479,12 @@ const RoomMap = () => {
       let errorMessage = "Unable to get location.";
       switch (error.code) {
         case error.PERMISSION_DENIED:
-          errorMessage = "Location access denied. Please enable location permissions.";
+          errorMessage =
+            "Location access denied. Please enable location permissions.";
           break;
         case error.POSITION_UNAVAILABLE:
-          errorMessage = "Location unavailable. Please check your device settings.";
+          errorMessage =
+            "Location unavailable. Please check your device settings.";
           break;
         case error.TIMEOUT:
           errorMessage = "Location request timed out. Please try again.";
@@ -414,7 +526,7 @@ const RoomMap = () => {
       setGeofence((prev) => ({
         ...prev,
         center: coords, // or you can use groupCenter if you prefer
-        radius: 300
+        radius: 300,
       }));
     }
   }, [coords, geofence.center]);
@@ -538,6 +650,10 @@ const RoomMap = () => {
       ]);
     };
     const handleRoomMessage = ({ from, message }) => {
+      if (message.type === "hazard" && from !== socket.id) {
+        showToast(`⚠️ ${message.content}`, "warning");
+      }
+
       if (message.type === "sos" && from !== socket.id) {
         playAlertSound();
         showToast(`🚨 SOS triggered by ${message.sender}`, "danger");
@@ -637,44 +753,43 @@ const RoomMap = () => {
 
   // BATTERY: monitor and send to others
   useEffect(() => {
-  let batteryRef = null;
-  let lastSentLevel = null;
+    let batteryRef = null;
+    let lastSentLevel = null;
 
-  const sendBatteryStatus = () => {
-    if (!batteryRef || !user?.id || !socket) return;
-    const data = {
-      level: batteryRef.level,
-      charging: batteryRef.charging,
-      ts: Date.now(),
-    };
-    localStorage.setItem("batteryStatus", JSON.stringify(data));
-    if (batteryRef.level !== lastSentLevel) {
-      socket.emit("battery-status", {
-        roomCode,
-        userId: user.id,
+    const sendBatteryStatus = () => {
+      if (!batteryRef || !user?.id || !socket) return;
+      const data = {
         level: batteryRef.level,
         charging: batteryRef.charging,
-      });
-      lastSentLevel = batteryRef.level;
-    }
-  };
+        ts: Date.now(),
+      };
+      localStorage.setItem("batteryStatus", JSON.stringify(data));
+      if (batteryRef.level !== lastSentLevel) {
+        socket.emit("battery-status", {
+          roomCode,
+          userId: user.id,
+          level: batteryRef.level,
+          charging: batteryRef.charging,
+        });
+        lastSentLevel = batteryRef.level;
+      }
+    };
 
-  if (!navigator.getBattery) return;
-  navigator.getBattery().then((battery) => {
-    batteryRef = battery;
-    battery.addEventListener("levelchange", sendBatteryStatus);
-    battery.addEventListener("chargingchange", sendBatteryStatus);
-    sendBatteryStatus();
-  });
+    if (!navigator.getBattery) return;
+    navigator.getBattery().then((battery) => {
+      batteryRef = battery;
+      battery.addEventListener("levelchange", sendBatteryStatus);
+      battery.addEventListener("chargingchange", sendBatteryStatus);
+      sendBatteryStatus();
+    });
 
-  return () => {
-    if (batteryRef) {
-      batteryRef.removeEventListener("levelchange", sendBatteryStatus);
-      batteryRef.removeEventListener("chargingchange", sendBatteryStatus);
-    }
-  };
-}, [socket, user, roomCode]);
-
+    return () => {
+      if (batteryRef) {
+        batteryRef.removeEventListener("levelchange", sendBatteryStatus);
+        batteryRef.removeEventListener("chargingchange", sendBatteryStatus);
+      }
+    };
+  }, [socket, user, roomCode]);
 
   useEffect(() => {
     const socket = getSocket();
@@ -692,6 +807,55 @@ const RoomMap = () => {
       socket.off("user-battery-update", handleUserBatteryUpdate);
     };
   }, []);
+
+  // Listen for hazard updates from server
+  useEffect(() => {
+    const handler = (data) => {
+      const dM = coords
+        ? Math.round(haversine(coords, { lat: data.lat, lng: data.lon }))
+        : null;
+      showToast(
+        `⚠️ ${data.type} reported${dM != null ? ` ${dM}m away` : ""} by ${
+          data.userName
+        }`,
+        "warning"
+      );
+      setHazards((prev) => [
+        ...prev,
+        { ...data, notified: true, distanceM: dM, createdAt: Date.now() },
+      ]);
+    };
+    socket.on("hazard-added", handler);
+    return () => socket.off("hazard-added", handler);
+  }, [socket, coords, showToast]);
+
+  const visibleHazards = useMemo(() => {
+    const now = Date.now();
+    return hazards.filter(
+      (h) => !h.createdAt || now - h.createdAt < 5 * 60 * 1000 // 5 minutes
+    );
+  }, [hazards]);
+
+  /**
+   * Add a hazard (called by button or map click)
+   */
+  const addHazard = (type, lat, lon) => {
+    const data = {
+      type,
+      lat,
+      lon,
+      userId: user.id,
+      userName: user.name,
+      roomId: roomCode, // use roomCode here
+    };
+    console.log("[RoomMap] Emitting hazard:", data);
+
+    // Emit to server
+    socket.emit("add-hazard", data);
+
+    // Optimistically add to local state
+    setHazards((prev) => [...prev, data]);
+  };
 
   // Calculate group center
   const groupCenter = useMemo(() => {
@@ -730,12 +894,12 @@ const RoomMap = () => {
         showToast(`${u.username || "User"} left geofenced area!`, "warning");
         setUserLocations((prev) => ({
           ...prev,
-          [id]: { ...prev[id], wasOutsideGeofence: true }
+          [id]: { ...prev[id], wasOutsideGeofence: true },
         }));
       } else if (!isNowOutside && u.wasOutsideGeofence) {
         setUserLocations((prev) => ({
           ...prev,
-          [id]: { ...prev[id], wasOutsideGeofence: false }
+          [id]: { ...prev[id], wasOutsideGeofence: false },
         }));
       }
     });
@@ -866,6 +1030,7 @@ const RoomMap = () => {
             {toast.message}
           </div>
         )}
+
         <MapContainer
           center={coords}
           zoom={15}
@@ -877,14 +1042,26 @@ const RoomMap = () => {
             url="https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png"
             attribution='&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors'
           />
+
+          {sourceCoords && destinationCoords && (
+            <RoutePath source={sourceCoords} destination={destinationCoords} />
+          )}
+
           {/* Draw geofence */}
           {geofence.center && (
             <Circle
               center={geofence.center}
               radius={geofence.radius}
-              pathOptions={{ color: "#2563eb", fillColor: "#93c5fd", fillOpacity: 0.2 }}
+              pathOptions={{
+                color: "#2563eb",
+                fillColor: "#93c5fd",
+                fillOpacity: 0.2,
+              }}
             />
           )}
+
+          {/* Yellow blinking hazard markers visible within last 5 minutes */}
+          <HazardLayer hazards={visibleHazards} />
 
           <RecenterMap coords={coords} />
 
@@ -908,7 +1085,9 @@ const RoomMap = () => {
             <Popup className="font-medium">
               {user?.name || "You"}
               {userLocations[mySocketId]?.isStationary && (
-                <span className="block text-red-700 font-bold">Stationary - SOS</span>
+                <span className="block text-red-700 font-bold">
+                  Stationary - SOS
+                </span>
               )}
               {isOutsideGeofence(coords, geofence) && (
                 <span className="block text-orange-700 font-bold">
@@ -917,6 +1096,7 @@ const RoomMap = () => {
               )}
             </Popup>
           </Marker>
+
           {/* Render Other Users */}
           {Object.entries(userLocations)
             .filter(([id]) => id !== mySocketId)
@@ -930,7 +1110,8 @@ const RoomMap = () => {
 
               let markerType = null;
               if (u.isStationary) markerType = "stationary";
-              else if (deviationDistance > DEVIATION_THRESHOLD) markerType = "far";
+              else if (deviationDistance > DEVIATION_THRESHOLD)
+                markerType = "far";
               else if (outside) markerType = "outside";
               else markerType = "normal";
 
@@ -954,7 +1135,9 @@ const RoomMap = () => {
                       <div className="flex flex-col">
                         <span>{u.username}</span>
                         {markerType === "stationary" && (
-                          <span className="text-red-600 font-bold">Stationary - SOS</span>
+                          <span className="text-red-600 font-bold">
+                            Stationary - SOS
+                          </span>
                         )}
                         {markerType === "far" && (
                           <span className="text-yellow-600">
@@ -984,7 +1167,9 @@ const RoomMap = () => {
                       }
                       weight={4}
                       dashArray={
-                        markerType === "stationary" || markerType === "far" || markerType === "outside"
+                        markerType === "stationary" ||
+                        markerType === "far" ||
+                        markerType === "outside"
                           ? "5,5"
                           : null
                       }
@@ -1073,6 +1258,20 @@ const RoomMap = () => {
               >
                 ×
               </button>
+
+              <button
+                onClick={() => addHazard("Pothole", coords.lat, coords.lng)}
+                className="p-2 bg-red-600 text-white rounded"
+              >
+                Mark Pothole
+              </button>
+
+              <button
+                onClick={() => addHazard("Accident", coords.lat, coords.lng)}
+                className="p-2 bg-yellow-600 text-white rounded ml-2"
+              >
+                Mark Accident
+              </button>
             </div>
             <div className="max-h-64 overflow-y-auto">
               {activeUsers.map((user, idx) => (
@@ -1086,10 +1285,10 @@ const RoomMap = () => {
                   <div
                     className="w-3 h-3 rounded-full mr-2"
                     style={{
-                      backgroundColor:
-                        userLocations[user.socketId]?.isStationary
-                          ? "#ef4444"
-                          : getUserColor(user.socketId),
+                      backgroundColor: userLocations[user.socketId]
+                        ?.isStationary
+                        ? "#ef4444"
+                        : getUserColor(user.socketId),
                     }}
                   />
                   <span className="truncate flex-1">
@@ -1122,8 +1321,13 @@ const RoomMap = () => {
                       </span>
                     )}
                     {/* OUTSIDE AREA indicator */}
-                    {isOutsideGeofence(userLocations[user.socketId]?.coords, geofence) && (
-                      <span className="ml-2 text-xs text-orange-600">OUTSIDE AREA!</span>
+                    {isOutsideGeofence(
+                      userLocations[user.socketId]?.coords,
+                      geofence
+                    ) && (
+                      <span className="ml-2 text-xs text-orange-600">
+                        OUTSIDE AREA!
+                      </span>
                     )}
                   </span>
                   {userLocations[user.socketId]?.isStationary && (
@@ -1157,7 +1361,9 @@ const RoomMap = () => {
                 max="2000"
                 step="50"
                 value={geofence.radius}
-                onChange={e => setGeofence(g => ({ ...g, radius: Number(e.target.value) }))}
+                onChange={(e) =>
+                  setGeofence((g) => ({ ...g, radius: Number(e.target.value) }))
+                }
                 className="w-full p-1 border rounded text-sm"
               />
             </div>

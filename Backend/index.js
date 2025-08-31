@@ -7,6 +7,7 @@ import connectDB from "./config/db.js";
 import authRoutes from "./routes/authRoutes.js";
 import roomRoutes from "./routes/roomRoutes.js";
 import haversine from "haversine-distance";
+import orsRoutes from "./routes/orsRoutes.js";
 
 dotenv.config();
 connectDB();
@@ -25,6 +26,7 @@ app.use(cors());
 app.use(express.json());
 app.use("/api/auth", authRoutes);
 app.use("/api/room", roomRoutes);
+app.use("/api/ors", orsRoutes);
 
 const PORT = process.env.PORT || 5000;
 const DEVIATION_THRESHOLD = 100; // Meters, adjust as needed
@@ -124,6 +126,34 @@ io.on("connection", (socket) => {
       },
     });
   });
+
+// Listen for hazard reports from a user
+// Listen for hazard reports from a user
+socket.on("add-hazard", (data) => {
+  console.log("[Server] Received hazard:", data);
+  const roomId = data.roomId;
+
+  // Broadcast marker update to other users in the room
+  socket.to(roomId).emit("hazard-added", data);
+  console.log(`[Server] Broadcasted hazard to room ${roomId}`);
+
+  // Broadcast normalized hazard chat message to all users in the room
+  io.in(roomId).emit("room-message", {
+    from: socket.id,
+    message: {
+      type: "hazard",
+      content: `🚨 ${data.userName} reported ${data.type}`,
+      sender: data.userName,
+      lat: data.lat,
+      lon: data.lon,
+      timestamp: Date.now(),
+    },
+  });
+  console.log("[Server] Sent hazard room-message");
+});
+
+
+
 
   socket.on("disconnect", () => {
     const { roomCode, username, userId } = socket.data;

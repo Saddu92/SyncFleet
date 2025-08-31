@@ -8,12 +8,14 @@ const RoomSchema = new mongoose.Schema(
       unique: true,
     },
     source: {
-      type: String,
-      required: [true, "Source Location is required"],
+      displayName: { type: String, required: true }, // ✅ Store Nominatim display_name
+      lat: { type: Number, required: true },         // ✅ Store latitude
+      lon: { type: Number, required: true },         // ✅ Store longitude
     },
     destination: {
-      type: String,
-      required: [true, "Destination Location is required"],
+      displayName: { type: String, required: true },
+      lat: { type: Number, required: true },
+      lon: { type: Number, required: true },
     },
     createdBy: {
       type: mongoose.Schema.Types.ObjectId,
