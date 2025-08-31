@@ -1007,7 +1007,7 @@ const RoomMap = () => {
             >
               <Popup>Group Center</Popup>
             </Marker>
-          )}
+          )} 
         </MapContainer>
 
         {/* Top Right Buttons */}

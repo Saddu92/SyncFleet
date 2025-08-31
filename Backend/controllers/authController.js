@@ -10,7 +10,7 @@ const generateToken = (userId) => {
 
 // 📝 Register Controller
 export const registrerUser = async (req, res) => {
-  try {
+  try { 
     const { name, email, password } = req.body;
 
     // Check if user exists
